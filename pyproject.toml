@@ -1,0 +1,20 @@
+[project]
+name = "scientific-graph-agent"
+version = "0.1.0"
+description = "Simple agent graph for scientific paper exploration with memory"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.0.1",
+    "langgraph-prebuilt>=1.0.1",
+    "langgraph-sdk>=0.2.9",
+    "langgraph-checkpoint-sqlite>=3.0.0",
+    "langgraph-cli[inmem]>=0.4.4",
+    "langsmith>=0.4.37",
+    "langchain-community>=0.4",
+    "langchain-core>=1.0.0",
+    "langchain-openai>=1.0.0",
+    "arxiv>=2.2.0",
+    "python-dotenv>=1.1.1",
+    "jupyter>=1.1.1",
+    "ipykernel>=7.0.1"
+]
