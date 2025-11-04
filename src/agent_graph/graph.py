@@ -2,8 +2,11 @@
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.sqlite import SqliteSaver
 
-from agent_graph.state import AgentState
+from agent_graph.state import InternalState, InputState, OutputState
 from agent_graph.nodes import clarifier_node, researcher_node, summarizer_node, should_continue
+
+from langchain_community.cache import SQLiteCache
+from langchain_core.globals import set_llm_cache
 
 import logging
 
@@ -15,6 +18,8 @@ logging.basicConfig(
 
 # Create a logger instance
 logger = logging.getLogger(__name__)
+
+set_llm_cache(SQLiteCache(database_path="explorer_cache.db"))
 
 
 def create_graph(
@@ -34,7 +39,11 @@ def create_graph(
           and read by nodes during execution.
     """
     
-    workflow = StateGraph(AgentState)
+    workflow = StateGraph(
+        InternalState,        # Internal working state
+        input=InputState,     # Only accept 'query' from users
+        output=OutputState    # Only return 'summary', 'papers', 'messages'
+    )
     
     workflow.add_node("clarifier", clarifier_node)
     workflow.add_node("researcher", researcher_node)
@@ -54,7 +63,6 @@ def create_graph(
     )
     
     if with_checkpointer:
-        # FIX: Use the synchronous API correctly
         import sqlite3
         conn = sqlite3.connect(":memory:", check_same_thread=False)
         memory = SqliteSaver(conn)

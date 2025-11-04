@@ -7,3 +7,5 @@ uv.lock
 *.egg-info/
 dist/
 .langgraph_api/
+build/
+*.db
