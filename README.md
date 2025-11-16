@@ -164,12 +164,14 @@ print(f"\n{result['summary']}")
 
 ### Key Features Demonstrated
 
-- **Autonomous Query Refinement**: The clarifier node transforms natural language into optimized academic search terms
-- **Conditional Branching**: Automatic retry logic when insufficient papers are found (configurable threshold and max iterations)
-- **Persistent Memory**: Conversation history maintained via SQLite checkpointer (local) or platform persistence (Studio)
-- **Full Observability**: Every node execution, LLM call, and state transition visible in LangSmith
-- **Clean Architecture**: Separation of concerns with dedicated modules for state, tools, and node logic
-- **Type Safety**: Proper LangChain message types (`HumanMessage`, `AIMessage`) with metadata
+- **Multi-Node Agent Graph**: 3-node architecture (Clarifier → Researcher → Summarizer) with conditional routing
+- **Autonomous Query Refinement**: Transforms natural language questions into optimized academic search queries
+- **Intelligent Retry Logic**: Automatically loops back when insufficient papers found (configurable thresholds)
+- **Persistent Memory**: Conversation history maintained via SQLite checkpointer with thread-based sessions
+- **Full Observability**: Complete tracing with LangSmith and real-time visualization in LangGraph Studio
+- **ArXiv Integration**: Searches scientific literature with configurable result limits
+- **Type-Safe State Management**: Proper TypedDict state with LangChain message types
+- **Production-Ready Patterns**: Clean separation of concerns, error handling, and configuration management
 
 ## Resources
 

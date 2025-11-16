@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 
 # === REDUCERS ===
 
-def keep_top_papers(existing: List[dict], new: List[dict], n_top: int) -> List[dict]:
+def keep_top_papers(existing: List[dict], new: List[dict], n_top: int = 10) -> List[dict]:
     """
     Reducer function to maintain top N papers by relevance score.
 
@@ -22,6 +22,11 @@ def keep_top_papers(existing: List[dict], new: List[dict], n_top: int) -> List[d
     Returns:
         Top N papers sorted by relevance score
     """
+    # 👇 If new is empty list, treat it as a reset signal
+    if isinstance(new, list) and len(new) == 0 and len(existing) > 0:
+        # Empty list means "clear existing papers"
+        return []
+    
     combined = existing + new
     
     # Remove duplicates, keeping highest score
@@ -31,7 +36,7 @@ def keep_top_papers(existing: List[dict], new: List[dict], n_top: int) -> List[d
         if paper_id not in seen or paper['relevance_score'] > seen[paper_id]['relevance_score']:
             seen[paper_id] = paper
     
-    # Sort by relevance, keep top 10
+    # Sort by relevance, keep top N
     sorted_papers = sorted(seen.values(), 
                           key=lambda p: p.get('relevance_score', 0), 
                           reverse=True)
@@ -40,7 +45,7 @@ def keep_top_papers(existing: List[dict], new: List[dict], n_top: int) -> List[d
 def summarize_messages(
         existing: List[BaseMessage],
         new: List[BaseMessage],
-        min_meesage: int = 3,
+        min_message: int = 3,
         llm_model_name = "gpt-4o-mini",
         llm_temperature: int = 1,
         ) -> List[BaseMessage]:
@@ -52,7 +57,7 @@ def summarize_messages(
     Args:
         existing: Previously stored messages
         new: Newly added messages
-        min_meesage: Minimum number of recent messages to keep (default: 3)
+        min_message: Minimum number of recent messages to keep (default: 3)
         llm_model_name: Model to use for summarization (default: gpt-4o-mini)
         llm_temperature: Temperature for summarization (default: 1)
 
@@ -61,13 +66,13 @@ def summarize_messages(
     """
     combined = existing + new
 
-    # Keep last min_meesage messages as-is
-    if len(combined) <= min_meesage:
+    # Keep last min_message messages as-is
+    if len(combined) <= min_message:
         return combined
 
     # Summarize everything before the last 10
-    old_messages = combined[:-min_meesage]
-    recent_messages = combined[-min_meesage:]
+    old_messages = combined[:-min_message]
+    recent_messages = combined[-min_message:]
 
     llm = ChatOpenAI(model=llm_model_name, temperature=llm_temperature)
 
@@ -100,7 +105,7 @@ class OutputState(TypedDict):
     papers: Annotated[List[dict], lambda e, n: keep_top_papers(e, n, n_top=10)]  # Papers found from ArXiv
     messages: Annotated[List[BaseMessage], lambda e, n: summarize_messages(
         e, n,
-        min_meesage=3,
+        min_message=3,
         llm_model_name="gpt-4o-mini",
         llm_temperature=1)]  # Conversation history
 
@@ -112,6 +117,7 @@ class InternalState(InputState, OutputState):
     """
     refined_query: NotRequired[str]  # Refined query produced by clarifier
     iteration: NotRequired[int]  # Loop counter for retry logic
+    approved: NotRequired[bool]  # Approval status from approver node
     
 class PrivateState(TypedDict):
     """Private state for internal node processing."""
