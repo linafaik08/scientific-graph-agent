@@ -3,7 +3,7 @@
 
 - Author: [Lina Faik](https://www.linkedin.com/in/lina-faik/)
 - Creation date: October 2025  
-- Last update: October 2025
+- Last update: November 2025
 
 ## Objective
 
