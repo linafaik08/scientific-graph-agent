@@ -29,19 +29,15 @@ The graph includes **intelligent retry logic**: if fewer than 3 papers are found
 
 ```
 notebooks/
-└── demo.py                    # Interactive demo with examples and LangSmith integration
+├── demo_basic.ipynb           # Memory, checkpoints & conversation flow
+├── demo_advanced.ipynb        # Streaming, interrupts & time travel
+└── demo_multi_tools.ipynb     # Multi-tool (ArXiv+Wikipedia) & map-reduce
 
 src/agent_graph/
-├── state.py                   # Shared state definition with message history
-├── tools.py                   # ArXiv API integration
-├── nodes.py                   # Three graph nodes (clarifier, researcher, summarizer)
-├── graph.py                   # Graph construction with conditional edges
-└── __init__.py                # Public API exports
-
-langgraph.json                 # LangGraph Studio configuration
-pyproject.toml                 # Project dependencies
-README.md
-.env.example                   # Environment variables template
+├── state.py                   # State management with reducers
+├── tools.py                   # ArXiv & Wikipedia search (sync + streaming)
+├── nodes.py                   # Clarifier, Researcher, Summarizer, Approver
+└── graph.py                   # Graph builder with interrupt support
 ```
 
 ## How to Use This Repository?
@@ -164,14 +160,15 @@ print(f"\n{result['summary']}")
 
 ### Key Features Demonstrated
 
-- **Multi-Node Agent Graph**: 3-node architecture (Clarifier → Researcher → Summarizer) with conditional routing
-- **Autonomous Query Refinement**: Transforms natural language questions into optimized academic search queries
-- **Intelligent Retry Logic**: Automatically loops back when insufficient papers found (configurable thresholds)
-- **Persistent Memory**: Conversation history maintained via SQLite checkpointer with thread-based sessions
-- **Full Observability**: Complete tracing with LangSmith and real-time visualization in LangGraph Studio
-- **ArXiv Integration**: Searches scientific literature with configurable result limits
-- **Type-Safe State Management**: Proper TypedDict state with LangChain message types
-- **Production-Ready Patterns**: Clean separation of concerns, error handling, and configuration management
+- **Multi-Node Architecture**: Clarifier → Researcher → Approver → Summarizer with conditional routing
+- **Multiple Execution Modes**: Sequential queries or map-reduce parallel search
+- **Multi-Source Research**: ArXiv papers + Wikipedia articles with streaming support
+- **Human-in-the-Loop**: Interrupt points for approval before continuing
+- **Intelligent Retry Logic**: Auto-loop when results insufficient (configurable thresholds)
+- **Persistent Memory**: SQLite checkpointer with message summarization
+- **State Reducers**: Smart paper deduplication and conversation history management
+- **Time Travel Debugging**: Replay from any checkpoint state
+- **Full Observability**: LangSmith tracing + LangGraph Studio visualization
 
 ## Resources
 
