@@ -2,9 +2,10 @@
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.types import interrupt
+import asyncio
 
 from agent_graph.state import InputState, OutputState, PrivateState, InternalState
-from agent_graph.tools import search_arxiv, search_arxiv_streaming
+from agent_graph.tools import search_arxiv, search_arxiv_streaming, search_wikipedia, search_wikipedia_streaming
 
 
 import logging
@@ -19,25 +20,105 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ============================================================================
+# TOOL CONFIGURATION
+# ============================================================================
+
+# Default tool mapping
+TOOL_REGISTRY = {
+    "arxiv": {
+        "sync": search_arxiv,
+        "async": search_arxiv_streaming,
+        "description": "ArXiv scientific papers",
+        "param_name": "query"
+    },
+    "wikipedia": {
+        "sync": search_wikipedia,
+        "async": search_wikipedia_streaming,
+        "description": "Wikipedia articles",
+        "param_name": "topic"
+    }
+}
+
+# ============================================================================
 # SYNC (NON-STREAMING) NODES
 # ============================================================================
 
 
 def clarifier_node(state: InternalState) -> PrivateState:
     """Clarifier node: refines and optimizes the user query."""
-    
+
     original_query = state["query"]
     conversation_history = state.get("messages", [])
+    num_queries = state.get("num_queries", 1)  # Check if multi-query mode is requested
 
     llm = ChatOpenAI(
         model=state.get("llm_model", "gpt-4o-mini"),
-        temperature=state.get("llm_temperature", 0)
+        temperature=state.get("llm_temperature", 0.3 if num_queries > 1 else 0)
     )
 
-    logging.info(f"Clarifying query: '{original_query}'")
+    logging.info(f"Clarifying query: '{original_query}' (num_queries={num_queries})")
 
-    # Build messages with conversation history
-    system_prompt = """You are a research assistant specialized in query refinement.
+    if num_queries > 1:
+        # Multi-query mode for map-reduce
+        system_prompt = f"""You are a research assistant specialized in query refinement.
+Your task is to transform user questions into {num_queries} diverse and complementary ArXiv search queries.
+
+Guidelines:
+- Consider the conversation history to understand context
+- Generate {num_queries} different search queries that approach the topic from different angles
+- Each query should target different aspects or related concepts
+- Use technical terminology
+- Keep each query concise (5-10 words max)
+- Ensure queries are complementary, not redundant
+
+Return ONLY the queries, one per line, numbered. Example format:
+1. first refined query here
+2. second refined query here
+3. third refined query here"""
+
+        messages = [SystemMessage(content=system_prompt)]
+
+        # Add conversation history for context
+        if conversation_history:
+            messages.extend(conversation_history)
+
+        # Add the current query
+        messages.append(HumanMessage(content=f"Original question: {original_query}", name="User"))
+
+        response = llm.invoke(messages)
+        refined_queries_text = response.content.strip()
+
+        # Parse the numbered queries
+        lines = refined_queries_text.split('\n')
+        refined_queries = []
+        for line in lines:
+            line = line.strip()
+            if line and line[0].isdigit():
+                # Remove the number prefix (e.g., "1. ", "2. ")
+                query = line.split('.', 1)[1].strip() if '.' in line else line
+                refined_queries.append(query)
+
+        # Fallback if parsing fails
+        if not refined_queries:
+            refined_queries = [original_query]
+
+        logging.info(f"Generated {len(refined_queries)} refined queries:")
+        for i, q in enumerate(refined_queries, 1):
+            logging.info(f"  {i}. {q}")
+
+        # Return PrivateState fields with multiple queries
+        return {
+            "refined_queries": refined_queries,
+            "refined_query": refined_queries[0],  # Keep first one for backward compatibility
+            "iteration": 0,
+            "messages": [
+                HumanMessage(content=original_query, name="User"),
+                AIMessage(content=f"Refined queries:\n" + "\n".join(f"{i}. {q}" for i, q in enumerate(refined_queries, 1)), name="Clarifier")
+            ]
+        }
+    else:
+        # Original single-query mode
+        system_prompt = """You are a research assistant specialized in query refinement.
 Your task is to transform user questions into optimal ArXiv search queries.
 
 Guidelines:
@@ -50,35 +131,35 @@ Guidelines:
 
 Return ONLY the refined query, nothing else."""
 
-    messages = [SystemMessage(content=system_prompt)]
+        messages = [SystemMessage(content=system_prompt)]
 
-    # Add conversation history for context
-    if conversation_history:
-        messages.extend(conversation_history)
+        # Add conversation history for context
+        if conversation_history:
+            messages.extend(conversation_history)
 
-    # Add the current query
-    messages.append(HumanMessage(content=f"Original question: {original_query}", name="User"))
+        # Add the current query
+        messages.append(HumanMessage(content=f"Original question: {original_query}", name="User"))
 
-    response = llm.invoke(messages)
-    refined_query = response.content.strip()
+        response = llm.invoke(messages)
+        refined_query = response.content.strip()
 
-    logging.info(f"Refined query: '{refined_query}'")
+        logging.info(f"Refined query: '{refined_query}'")
 
-    # Return PrivateState fields
-    return {
-        "refined_query": refined_query,
-        "iteration": 0,
-        "messages": [
-            HumanMessage(content=original_query, name="User"),
-            AIMessage(content=f"Refined query: {refined_query}", name="Clarifier")
-        ]
-    }
+        # Return PrivateState fields
+        return {
+            "refined_query": refined_query,
+            "iteration": 0,
+            "messages": [
+                HumanMessage(content=original_query, name="User"),
+                AIMessage(content=f"Refined query: {refined_query}", name="Clarifier")
+            ]
+        }
 
 
-def researcher_node(state: InternalState) -> OutputState:
-    """Researcher node: searches ArXiv for relevant papers and scores their relevance."""
-   
-    max_papers = state.get("max_papers")
+def arxiv_researcher_node(state: InternalState) -> OutputState:
+    """ArXiv researcher node: searches ArXiv for relevant papers and scores their relevance."""
+
+    max_papers = state.get("max_papers", 5)
 
     query = state["refined_query"]
     original_query = state["query"]
@@ -121,6 +202,7 @@ Relevance Score (1-100):""", name="User")
         response = llm.invoke(score_messages)
         relevance_score = int(response.content.strip())
         paper['relevance_score'] = max(1, min(100, relevance_score))
+        paper['source'] = 'arxiv'
         scored_papers.append(paper)
         logging.info(f"  📄 {paper['title'][:60]}... - Score: {relevance_score}")
 
@@ -131,7 +213,82 @@ Relevance Score (1-100):""", name="User")
         "messages": [
             AIMessage(
                 content=f"Found {len(scored_papers)} papers on ArXiv for query: {query}",
-                name="Researcher"
+                name="ArXivResearcher"
+            )
+        ]
+    }
+
+
+def wikipedia_researcher_node(state: InternalState) -> OutputState:
+    """Wikipedia researcher node: searches Wikipedia and scores relevance."""
+
+    query = state["refined_query"]
+    original_query = state["query"]
+    iteration = state.get("iteration", 0)
+
+    logging.info(f"Searching Wikipedia: '{query}' (iteration {iteration})")
+    result = search_wikipedia.invoke({"topic": query, "sentences": 5})
+
+    papers = state.get("papers", [])
+
+    if result.get("success"):
+        logging.info(f"Found Wikipedia article: {result['title']}")
+
+        llm_model = state.get("llm_model", "gpt-4o-mini")
+        llm_temperature = state.get("llm_temperature", 0)
+
+        # Score the article's relevance using LLM
+        llm = ChatOpenAI(model=llm_model, temperature=llm_temperature)
+
+        score_messages = [
+            SystemMessage(content="""You are a research relevance evaluator.
+            Score how relevant this Wikipedia article is to the user's query on a scale from 1 to 100.
+
+            Consider:
+            - Direct relevance to the query topic
+            - Quality and depth of content based on the summary
+            - Potential usefulness for answering the query
+
+            Respond with ONLY a number between 1 and 100, nothing else."""),
+            HumanMessage(content=f"""User Query: {original_query}
+
+Article Title: {result['title']}
+Summary: {result['summary'][:500]}
+
+Relevance Score (1-100):""", name="User")
+        ]
+
+        response = llm.invoke(score_messages)
+        relevance_score = int(response.content.strip())
+
+        # Format Wikipedia result to match paper structure
+        wiki_entry = {
+            "id": result["url"],
+            "title": result["title"],
+            "summary": result["summary"],
+            "url": result["url"],
+            "relevance_score": max(1, min(100, relevance_score)),
+            "source": "wikipedia",
+            "authors": ["Wikipedia"],
+            "published": "N/A"
+        }
+
+        papers.append(wiki_entry)
+        logging.info(f"  📖 {result['title'][:60]}... - Score: {relevance_score}")
+
+        message_content = f"Found Wikipedia article: {result['title']}"
+    else:
+        logging.warning(f"Wikipedia search failed: {result.get('error', 'Unknown error')}")
+        message_content = f"Wikipedia search failed: {result.get('error', 'No results')}"
+
+    # Return OutputState fields
+    return {
+        "papers": papers,
+        "iteration": iteration + 1,
+        "messages": [
+            AIMessage(
+                content=message_content,
+                name="WikipediaResearcher"
             )
         ]
     }
@@ -235,9 +392,9 @@ def should_continue(state: InternalState) -> str:
 # ASYNC STREAMING NODES
 # ============================================================================
 
-async def researcher_node_streaming(state: InternalState) -> OutputState:
+async def arxiv_researcher_node_streaming(state: InternalState) -> OutputState:
     """
-    Async researcher node with streaming support.
+    Async ArXiv researcher node with streaming support.
 
     This version uses the streaming ArXiv tool and streams token-level
     updates during relevance scoring.
@@ -314,6 +471,7 @@ Relevance Score (1-100):""", name="User")
         response = await llm.ainvoke(score_messages)
         relevance_score = int(response.content.strip())
         paper['relevance_score'] = max(1, min(100, relevance_score))
+        paper['source'] = 'arxiv'
         scored_papers.append(paper)
         logging.info(f"  📄 {paper['title'][:60]}... - Score: {relevance_score}")
 
@@ -324,11 +482,90 @@ Relevance Score (1-100):""", name="User")
         "messages": [
             AIMessage(
                 content=f"Found {len(scored_papers)} papers on ArXiv for query: {query}",
-                name="Researcher"
+                name="ArXivResearcher"
             )
         ]
     }
 
+
+async def wikipedia_researcher_node_streaming(state: InternalState) -> OutputState:
+    """
+    Async Wikipedia researcher node with streaming support.
+
+    This version uses the streaming Wikipedia tool.
+    """
+    query = state["refined_query"]
+    original_query = state["query"]
+    iteration = state.get("iteration", 0)
+
+    logging.info(f"🔍 Searching Wikipedia: '{query}' (iteration {iteration})")
+
+    # Use streaming version of search
+    result = await search_wikipedia_streaming.ainvoke({"topic": query, "sentences": 5})
+
+    papers = state.get("papers", [])
+
+    if result.get("success"):
+        logging.info(f"Found Wikipedia article: {result['title']}")
+
+        llm_model = state.get("llm_model", "gpt-4o-mini")
+        llm_temperature = state.get("llm_temperature", 0)
+
+        # Score the article's relevance using LLM
+        llm = ChatOpenAI(model=llm_model, temperature=llm_temperature)
+
+        score_messages = [
+            SystemMessage(content="""You are a research relevance evaluator.
+            Score how relevant this Wikipedia article is to the user's query on a scale from 1 to 100.
+
+            Consider:
+            - Direct relevance to the query topic
+            - Quality and depth of content based on the summary
+            - Potential usefulness for answering the query
+
+            Respond with ONLY a number between 1 and 100, nothing else."""),
+            HumanMessage(content=f"""User Query: {original_query}
+
+Article Title: {result['title']}
+Summary: {result['summary'][:500]}
+
+Relevance Score (1-100):""", name="User")
+        ]
+
+        response = await llm.ainvoke(score_messages)
+        relevance_score = int(response.content.strip())
+
+        # Format Wikipedia result to match paper structure
+        wiki_entry = {
+            "id": result["url"],
+            "title": result["title"],
+            "summary": result["summary"],
+            "url": result["url"],
+            "relevance_score": max(1, min(100, relevance_score)),
+            "source": "wikipedia",
+            "authors": ["Wikipedia"],
+            "published": "N/A"
+        }
+
+        papers.append(wiki_entry)
+        logging.info(f"  📖 {result['title'][:60]}... - Score: {relevance_score}")
+
+        message_content = f"Found Wikipedia article: {result['title']}"
+    else:
+        logging.warning(f"Wikipedia search failed: {result.get('error', 'Unknown error')}")
+        message_content = f"Wikipedia search failed: {result.get('error', 'No results')}"
+
+    # Return OutputState fields
+    return {
+        "papers": papers,
+        "iteration": iteration + 1,
+        "messages": [
+            AIMessage(
+                content=message_content,
+                name="WikipediaResearcher"
+            )
+        ]
+    }
 
 async def summarizer_node_streaming(state: InternalState) -> OutputState:
     """

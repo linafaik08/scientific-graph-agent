@@ -7,6 +7,10 @@ from langchain_openai import ChatOpenAI
 
 # === REDUCERS ===
 
+def take_max(left: int, right: int) -> int:
+    """Reducer that takes the maximum of two values."""
+    return max(left, right)
+
 def keep_top_papers(existing: List[dict], new: List[dict], n_top: int = 10) -> List[dict]:
     """
     Reducer function to maintain top N papers by relevance score.
@@ -98,6 +102,7 @@ class InputState(TypedDict):
     llm_temperature: NotRequired[float]  # Temperature for LLM calls
     max_papers: NotRequired[int]  # Maximum papers to retrieve
     max_iterations: NotRequired[int]  # Maximum refinement iterations
+    num_queries: NotRequired[int]  # Number of refined queries to generate (for map-reduce)
 
 class OutputState(TypedDict):
     """Output state for the graph - results returned to user."""
@@ -115,11 +120,13 @@ class InternalState(InputState, OutputState):
     """
     Full state used internally by nodes.
     """
-    refined_query: NotRequired[str]  # Refined query produced by clarifier
-    iteration: NotRequired[int]  # Loop counter for retry logic
+    refined_query: NotRequired[str]  # Refined query produced by clarifier (single query mode)
+    refined_queries: NotRequired[List[str]]  # Multiple refined queries (map-reduce mode)
+    iteration: Annotated[int, take_max]  # Loop counter for retry logic (uses max to handle concurrent updates)
     approved: NotRequired[bool]  # Approval status from approver node
     
 class PrivateState(TypedDict):
     """Private state for internal node processing."""
-    refined_query: str  # Refined query after clarification
+    refined_query: NotRequired[str]  # Refined query after clarification (single mode)
+    refined_queries: NotRequired[List[str]]  # Multiple refined queries (map-reduce mode)
     iteration: int  # Loop counter to avoid infinite loops

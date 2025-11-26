@@ -1,5 +1,6 @@
-"""ArXiv search tool with streaming support."""
+"""ArXiv search and Wikipedia research tools with streaming support."""
 import arxiv
+import wikipedia
 from langchain_core.tools import tool
 from langgraph.config import get_stream_writer
 from concurrent.futures import ThreadPoolExecutor
@@ -159,3 +160,163 @@ async def search_arxiv_streaming(query: str, max_results: int = 5) -> list[dict]
         writer = None
 
     return await _fetch_arxiv_results_async(query, max_results, writer)
+
+
+def _fetch_wikipedia_summary(topic: str, sentences: int = 5) -> dict:
+    """
+    Helper function to fetch Wikipedia summary synchronously.
+    This is run in a separate thread to avoid blocking the event loop.
+    """
+    try:
+        # Search for the topic
+        search_results = wikipedia.search(topic, results=5)
+
+        if not search_results:
+            return {
+                "success": False,
+                "error": f"No Wikipedia articles found for '{topic}'",
+                "topic": topic
+            }
+
+        # Get the first result
+        page_title = search_results[0]
+
+        # Fetch the page summary
+        summary = wikipedia.summary(page_title, sentences=sentences, auto_suggest=False)
+        page = wikipedia.page(page_title, auto_suggest=False)
+
+        return {
+            "success": True,
+            "topic": topic,
+            "title": page.title,
+            "summary": summary,
+            "url": page.url,
+            "related_topics": search_results[1:5] if len(search_results) > 1 else []
+        }
+
+    except wikipedia.exceptions.DisambiguationError as e:
+        # Handle disambiguation pages
+        return {
+            "success": False,
+            "error": "Multiple articles found. Please be more specific.",
+            "topic": topic,
+            "disambiguation_options": e.options[:10]  # Return first 10 options
+        }
+
+    except wikipedia.exceptions.PageError:
+        return {
+            "success": False,
+            "error": f"Page not found for '{topic}'",
+            "topic": topic
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Error fetching Wikipedia data: {str(e)}",
+            "topic": topic
+        }
+
+
+async def _fetch_wikipedia_summary_async(topic: str, sentences: int = 5, writer=None) -> dict:
+    """
+    Async helper function to fetch Wikipedia summary with progress updates.
+
+    Args:
+        topic: Topic to search for
+        sentences: Number of sentences in the summary (default: 5)
+        writer: Stream writer for custom progress updates (optional)
+
+    Returns:
+        Dictionary with Wikipedia article data
+    """
+    if writer and callable(writer):
+        writer(f"Searching Wikipedia for: '{topic}'")
+
+    loop = asyncio.get_running_loop()
+
+    try:
+        # Run the synchronous Wikipedia fetch in a thread pool
+        result = await loop.run_in_executor(_get_executor(), _fetch_wikipedia_summary, topic, sentences)
+
+        if writer and callable(writer):
+            if result["success"]:
+                writer(f"✅ Found article: {result['title']}")
+            else:
+                if "disambiguation_options" in result:
+                    writer(f"⚠️ Multiple articles found. Returning disambiguation options.")
+                else:
+                    writer(f"❌ {result['error']}")
+
+        return result
+
+    except Exception as e:
+        error_result = {
+            "success": False,
+            "error": f"Unexpected error: {str(e)}",
+            "topic": topic
+        }
+        if writer and callable(writer):
+            writer(f"❌ Error: {str(e)}")
+        return error_result
+
+
+@tool
+def search_wikipedia(topic: str, sentences: int = 5) -> dict:
+    """
+    Search Wikipedia for information about a topic.
+
+    This tool searches Wikipedia and returns a summary of the most relevant article.
+    If multiple articles match, it returns disambiguation options.
+
+    Args:
+        topic: The topic to search for (e.g., "quantum computing", "Albert Einstein")
+        sentences: Number of sentences in the summary (default: 5)
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the search was successful
+        - title: Article title (if found)
+        - summary: Article summary (if found)
+        - url: Wikipedia URL (if found)
+        - related_topics: List of related article titles
+        - error: Error message (if unsuccessful)
+        - disambiguation_options: List of options if topic is ambiguous
+    """
+    executor = _get_executor()
+    future = executor.submit(_fetch_wikipedia_summary, topic, sentences)
+    return future.result()
+
+
+@tool
+async def search_wikipedia_streaming(topic: str, sentences: int = 5) -> dict:
+    """
+    Search Wikipedia for information about a topic with streaming progress updates.
+
+    This async tool searches Wikipedia and emits progress updates during the search.
+    Use this within LangGraph to get real-time search progress.
+
+    Args:
+        topic: The topic to search for (e.g., "quantum computing", "Albert Einstein")
+        sentences: Number of sentences in the summary (default: 5)
+
+    Returns:
+        Dictionary containing:
+        - success: Whether the search was successful
+        - title: Article title (if found)
+        - summary: Article summary (if found)
+        - url: Wikipedia URL (if found)
+        - related_topics: List of related article titles
+        - error: Error message (if unsuccessful)
+        - disambiguation_options: List of options if topic is ambiguous
+    """
+    try:
+        writer = get_stream_writer()
+        # Check if writer is actually callable
+        if writer is None or not callable(writer):
+            writer = None
+    except Exception:
+        # If not in LangGraph context, fall back to no streaming
+        writer = None
+
+    return await _fetch_wikipedia_summary_async(topic, sentences, writer)
